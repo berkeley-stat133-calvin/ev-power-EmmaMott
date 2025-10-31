@@ -1,29 +1,141 @@
 ---
-title: "EV Power - Lab 4 Project Report"
+title: "Change in US Renewable Energy Share (2021-2023) - Lab 4 Project Report"
+author: "Emma Mott"
 format: typst
 ---
 
-# Example Solution 1
 
 ## **Part 0: libraries**
 
-```{r}
+```{r, echo = 'true', results= 'hide'}
+
+#install.packages("sf")
+library("sf")
+library("tidyverse")
+#install.packages("rnaturalearth")
+library("rnaturalearth")
+library(stringr)
+library(dplyr)
+library(ggplot2)
+#install.packages("maps")
+library(maps)
 
 ```
 
 ## **Part 1:** **Defining Research Question**
 
-Chosen Question:
+## Overview
+
+Chosen Question: How does the share of renewable energy use across states change between 2021-2023?
+
+## Data and Methods
 
 ## **Part 2: Data Preparation and Cleaning**
 
 ```{r}
 
+#Load data for renewables
+renew_2021 <- read_csv("data/renew-use-2021.csv")
+renew_2022 <- read_csv("data/renew-use-2022.csv")
+renew_2023 <- read_csv("data/renew-use-2023.csv")
+
+# renaming columns
+renew_2021 <- renew_2021 |> rename(Renewable_Use = matches("Renewable_Use"))
+renew_2022 <- renew_2022 |> rename(Renewable_Use = matches("Renewable_Use"))
+renew_2023 <- renew_2023 |> rename(Renewable_Use = matches("Renewable_Use"))
+
+# adding year column
+renew_2021 <- renew_2021 |> mutate(Year = 2021)
+renew_2022 <- renew_2022 |> mutate(Year = 2022)
+renew_2023 <- renew_2023 |> mutate(Year = 2023)
+
+# combining all three years into one data frame
+renew_all <- bind_rows(renew_2021, renew_2022, renew_2023)
+
+# extracting only the numeric values from messy Renewable_Use column using stringr
+renew_all <- renew_all |>
+  mutate(Renewable_Use_Num = as.numeric(str_extract(Renewable_Use, "\\d+")))
+
+# summarize total renewable use by state and year
+renew_summary <- renew_all |>
+  group_by(State, Year) |>
+  summarise(Total_Renewable_Use = sum(Renewable_Use_Num, na.rm = TRUE)) |>
+  mutate(State = str_to_upper(State))
+
+# Load total energy use
+total_2021 <- read_csv("data/total-use-2021.csv")
+total_2022 <- read_csv("data/total-use-2022.csv")
+total_2023 <- read_csv("data/total-use-2023.csv")
+
+head(renew_summary)
+
+
 ```
+
+
 
 ## **Part 3: Joining / Pivoting Datasets for Analysis**
 
 ```{r}
+
+# Pivot longer for 2021–2023
+pivot_total <- function(df, year) {
+  df |>
+    pivot_longer(
+      cols = -Energy_Source,
+      names_to = "State",
+      values_to = "Energy_Use"
+    ) |>
+    mutate(Year = year)
+}
+
+total_2021_long <- pivot_total(total_2021, 2021)
+total_2022_long <- pivot_total(total_2022, 2022)
+total_2023_long <- pivot_total(total_2023, 2023)
+
+# Combine all years
+total_all <- bind_rows(total_2021_long, total_2022_long, total_2023_long)
+
+# Make all state names uppercase
+total_all <- total_all |> mutate(State = str_to_upper(State))
+
+# Compute total energy per state 
+total_all_summary <- total_all |>
+  group_by(State, Year) |>
+  summarise(Total_Energy_Use = sum(Energy_Use, na.rm = TRUE))
+
+# Compute total renewable energy per state
+renewable_all <- total_all |>
+  filter(Energy_Source %in% c(
+    "total_renewable_energy", 
+    "total_renewables", 
+    "total renewable-energy")) |>
+  select(State, Year, Renewable_Energy_Use = Energy_Use)
+
+# join them to compute renewable share properly
+energy_joined <- total_all_summary |>
+  left_join(renewable_all, by = c("State", "Year")) |>
+  mutate(Renewable_Share = Renewable_Energy_Use / Total_Energy_Use)
+
+# Convert state abbreviations to full names
+state_fulls <- c(state.name, "District of Columbia")
+state_abbs  <- c(state.abb, "DC")
+# Build lookup table
+state_lookup <- tibble(
+  state_abbr = state_abbs,   
+  state_name = state_fulls     
+)
+
+
+#  clean abbreviated states
+energy_clean <- energy_joined |>
+  left_join(state_lookup, by = c("State" = "state_abbr")) |>
+  mutate(State = state_name) |>
+  select(-state_name)
+
+#final clean table with all the data!!
+head(energy_clean)
+
 
 ```
 
@@ -31,4 +143,52 @@ Chosen Question:
 
 ```{r}
 
+
+# loading US states geometry and excluding territories
+us_states <- ne_states(country = "United States of America", returnclass = "sf") |>
+  filter(!name %in% c("Puerto Rico", "Guam", "American Samoa",
+                      "Northern Mariana Islands", "United States Virgin Islands"))
+
+# Join the data to the sf object by full state name
+us_map <- us_states |>
+  left_join(energy_clean, by = c("name" = "State"))
+
+#plotting renewable share over the years
+ggplot(us_map) +
+  geom_sf(aes(fill = Renewable_Share), color = "white", size = 0.2) +
+  facet_wrap(~Year) +
+  scale_fill_viridis_c(
+  name = "Share of total energy",
+  labels = scales::percent_format(accuracy = 1),
+  option = "C",
+  limits = c(0, 0.4)  # fix the same scale across facets
+)+
+  coord_sf(
+    xlim = c(-125, -66),   # restricts to continental U.S.
+    ylim = c(24, 50),      # zooms in to main latitudes
+    expand = FALSE
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Renewable Energy Share by State",
+  ) +
+  theme(
+    panel.grid.major = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    strip.text = element_text(size = 12, face = "bold"),
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    legend.position = "right"
+  )
+
+
+
 ```
+
+
+## Analysis 
+From the map, we can see that most states do not have a significant change in their renewable energy share of total energy between 2021-2023. However, we do see that there are signifcant differences in renewable energy share across each state. 
+
+It seems that the West coast and midwest states have higher renewable shares than the South or Northeast (beside Maine and Vermont, which also have high renewable shares.) Significant West coast states with large shares are Oregon, Washington, and Idaho. Significant midwest states are South Dakota, Nebraska, and Iowa. In fact, South Dakota consistently has the largest renewable energy share of all the states, indicated by the bright yellow color. 
+
+Another interesting trend is that California's renewable energy share did grow from 2021-2023, indicated by the lighter purple shade in 2023. It is also interesting that the California renewable energy share is comparatively lower than other states, as California is known to produce a large amount of renewable energy. 
